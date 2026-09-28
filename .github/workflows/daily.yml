@@ -24,8 +24,83 @@ jobs:
         # numpy is needed for SFX/BGM generation (sfx module)
         run: pip install -q -r requirements.txt numpy
 
-      - name: Build video and upload to YouTube
-        run: python daily.py --auto --upload --privacy public
+      # ---------------------------------------------------------------
+      # v16.3 resumable phases: each phase skips work already present in
+      # work/. After every phase the workdir is saved as an artifact; on
+      # "Re-run failed jobs" GitHub reuses the run, so the artifacts from
+      # the previous attempt are restored and the run continues from the
+      # last finished phase instead of starting over. Restore/save steps
+      # are best-effort (continue-on-error): the phase steps themselves
+      # decide success/failure.
+      # ---------------------------------------------------------------
+
+      - name: Restore voice checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: phase-voice
+          path: work/
+        continue-on-error: true
+
+      - name: Phase 1 - Voiceover
+        run: python daily.py --phase voice --workdir work
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          TTS_ENGINE: edge
+
+      - name: Save voice checkpoint
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-voice
+          path: work/
+          retention-days: 7
+        continue-on-error: true
+
+      - name: Restore sections checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: phase-sections
+          path: work/
+        continue-on-error: true
+
+      - name: Phase 2 - Section videos
+        run: python daily.py --phase sections --workdir work
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          TTS_ENGINE: edge
+
+      - name: Drop regenerable cache before save
+        # _segwork holds intermediate bg renders that phase 2 rebuilds;
+        # dropping it keeps the artifact small. Partial finish-phase
+        # outputs are rebuilt by phase 3 anyway.
+        if: always()
+        run: rm -rf work/_segwork work/video.mp4 work/video_ticker_sub.mp4 work/video_mix.mp4 work/mix.wav
+        continue-on-error: true
+
+      - name: Save sections checkpoint
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-sections
+          path: work/
+          retention-days: 7
+        continue-on-error: true
+
+      - name: Restore for finish
+        uses: actions/download-artifact@v4
+        with:
+          name: phase-sections
+          path: work/
+        continue-on-error: true
+
+      - name: Phase 3 - Finish and upload
+        run: python daily.py --phase finish --workdir work --upload --privacy public
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
@@ -49,7 +124,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tiktok-long
-          path: output/*/tiktok-long.mp4
+          path: work/tiktok-long.mp4
           retention-days: 7
 
       - name: Upload TikTok cover
@@ -58,5 +133,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tiktok-cover
-          path: output/*/tiktok-cover.jpg
+          path: work/tiktok-cover.jpg
           retention-days: 7 
