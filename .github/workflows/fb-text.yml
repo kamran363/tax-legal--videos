@@ -21,7 +21,7 @@ jobs:
 
       - name: Post toddler text post
         env:
-          PAGE_ID: 1266057776592265
+          PAGE_ID: "1266057776592265"
           FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
         run: python fb-auto2/fb_text_poster.py
 
