@@ -31,4 +31,93 @@ jobs:
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-          TTS_ENGINE: edge  
+          TTS_ENGINE: edge
+
+      - name: Upload TikTok short copy
+        # Small WhatsApp-friendly vertical copy of the day's Short, kept
+        # 7 days so it can be downloaded and forwarded for TikTok reposting.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-short
+          path: output/short/tiktok-short.mp4
+          retention-days: 7
+
+      - name: Upload TikTok long copy
+        # Compressed 720p copy of the long video (~40-60MB), kept 7 days.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-long
+          path: output/*/tiktok-long.mp4
+          retention-days: 7
+
+      - name: Upload TikTok cover
+        # Vertical 1080x1920 cover for the TikTok repost, kept 7 days.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-cover
+          path: output/*/tiktok-cover.jpg
+          retention-days: 7name: Daily YouTube Upload
+
+on:
+  schedule:
+    # Every day at 12:00 UTC (5pm PKT). The script then waits a random
+    # 0-8 hours before uploading so publish times vary naturally.
+    - cron: "0 12 * * *"
+  workflow_dispatch:  # lets you run it manually from the Actions tab
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: Install Python deps
+        # numpy is needed for SFX/BGM generation (sfx module)
+        run: pip install -q -r requirements.txt numpy
+
+      - name: Build video and upload to YouTube
+        run: python daily.py --auto --upload --privacy public
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          TTS_ENGINE: edge
+
+      - name: Upload TikTok short copy
+        # Small WhatsApp-friendly vertical copy of the day's Short, kept
+        # 7 days so it can be downloaded and forwarded for TikTok reposting.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-short
+          path: output/short/tiktok-short.mp4
+          retention-days: 7
+
+      - name: Upload TikTok long copy
+        # Compressed 720p copy of the long video (~40-60MB), kept 7 days.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-long
+          path: output/*/tiktok-long.mp4
+          retention-days: 7
+
+      - name: Upload TikTok cover
+        # Vertical 1080x1920 cover for the TikTok repost, kept 7 days.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-cover
+          path: output/*/tiktok-cover.jpg
+          retention-days: 7
