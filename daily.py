@@ -27,12 +27,24 @@ for _n, _b in _SRC.items():
 del _n, _b, _m, _SRC, _sys, _types, _b64
 """Daily runner: pick topic -> build video -> upload to YouTube.
 
-Usage:
-    python -m agent.daily --auto --upload --privacy public
-    python -m agent.daily --topic "1099"            # test build only
-    python -m agent.daily --auto                     # build, no upload
+v16.3 resumable phased mode (survives GitHub runner crashes):
+    python daily.py --phase voice --workdir work
+    python daily.py --phase sections --workdir work
+    python daily.py --phase finish --workdir work --upload --privacy public
+Each phase is idempotent: if its expected outputs already exist in
+workdir it prints "[phase:X] already done, skipping". A re-run therefore
+continues from the last finished phase instead of starting over. The
+topic/package is pinned to workdir/package.json so a next-day re-run
+uses the exact same topic, script and narration.
+
+Legacy single-run mode (behavior unchanged):
+    python daily.py --auto --upload --privacy public
+    python daily.py --topic "1099"            # test build only
+    python daily.py --auto                     # build, no upload
 """
 import argparse
+import hashlib
+import json
 import os
 import re
 import sys
@@ -69,36 +81,191 @@ def log_resources(tag):
     print(f"[res] {tag} disk_free_gb={_d} mem_avail_gb={_m}", flush=True)
 
 
-def build_video(topic_data, cfg):
-    from script_builder import build_package, next_topic_name
-    from voiceover import make_voiceovers
-    from visuals import (build_section_videos, make_subscribe_overlay,
-                          build_disclaimer_segment, add_ticker_subscribe,
-                          DISCLAIMER_PRE_S, DISCLAIMER_POST_S)
-    from assemble import assemble_video, add_subscribe_overlay
-    from thumbnail import make_thumbnail
-    from stock import query_from_heading
-    from seo import DISCLAIMER_EXACT
+# ---------------------------------------------------------------------------
+# v16.3 resumable phases
+# ---------------------------------------------------------------------------
+PHASES = ("voice", "sections", "finish")
 
+
+def _ckpt_path(workdir):
+    return os.path.join(workdir, "checkpoint.json")
+
+
+def load_checkpoint(workdir):
+    try:
+        with open(_ckpt_path(workdir)) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_checkpoint(workdir, **kw):
+    ck = load_checkpoint(workdir)
+    ck.update(kw)
+    try:
+        with open(_ckpt_path(workdir), "w") as f:
+            json.dump(ck, f)
+    except Exception as e:
+        print(f"[checkpoint] save failed (non-fatal): {e}")
+
+
+def pin_package(workdir, topic_arg=None, prepicked=None):
+    """Pin topic + built package into workdir/package.json.
+
+    Returns (topic_data, package). When package.json already exists (a
+    later phase, or a re-run on another day) the pinned files are loaded
+    instead of re-picking, so every phase uses the exact same topic,
+    script and narration.
+    """
+    from script_builder import (build_package, find_topic, next_topic_name,
+                                 pick_topic)
+    pp = os.path.join(workdir, "package.json")
+    if os.path.isfile(pp):
+        data = json.load(open(pp))
+        print(f"[phase] topic pinned: {data['topic_data']['topic']}")
+        return data["topic_data"], data["package"]
+    if prepicked is not None:
+        topic_data = prepicked
+    elif topic_arg:
+        topic_data = find_topic(topic_arg)
+    else:
+        topic_data = pick_topic()
+    print("Topic:", topic_data["topic"])
     # FOMO close teases tomorrow's topic by name (from the daily rotation).
     package = build_package(topic_data,
                             next_topic=next_topic_name(topic_data))
-    slug = re.sub(r"[^a-z0-9]+", "-", topic_data["topic"].lower()).strip("-")[:40]
-    workdir = os.path.join(cfg["out_dir"], slug)
+    sha = hashlib.sha256(
+        json.dumps(package, sort_keys=True).encode()).hexdigest()[:16]
     os.makedirs(workdir, exist_ok=True)
+    with open(pp, "w") as f:
+        json.dump({"topic_data": topic_data, "package": package,
+                   "package_sha": sha}, f)
+    save_checkpoint(workdir, package_sha=sha)
+    return topic_data, package
+
+
+def _vo_paths(workdir, n):
+    audio_dir = os.path.join(workdir, "audio")
+    return [os.path.join(audio_dir, f"section_{i:02d}.mp3") for i in range(n)]
+
+
+def _load_vo(workdir, package):
+    """Rebuild the [(mp3, duration)] list from a finished voice phase."""
+    n = len(package["sections"])
+    mp3s = _vo_paths(workdir, n)
+    dur_path = os.path.join(workdir, "audio", "durations.json")
+    if not (os.path.isfile(dur_path)
+            and all(os.path.isfile(p) for p in mp3s)):
+        return None
+    try:
+        durs = json.load(open(dur_path))["durations"]
+        if len(durs) == n and all(d > 0 for d in durs):
+            return list(zip(mp3s, durs))
+    except Exception:
+        pass
+    return None
+
+
+def phase_voice(workdir, cfg, topic_arg=None, prepicked=None):
+    """Phase 1: pin topic -> TTS voiceover. Idempotent."""
+    from voiceover import make_voiceovers
+    os.makedirs(workdir, exist_ok=True)
+    topic_data, package = pin_package(workdir, topic_arg, prepicked)
 
     api_key = (cfg.get("pexels_api_key") or "").strip()
     print(f"[stock] stock clips: {'ON' if api_key else 'OFF'}")
     print("[hook] opening hook + Dr. Sarah intro + retention teasers added")
 
-    print("[1/5] Script ready:", package["title"])
-    log_resources("pre-voiceover")
-    print("[2/5] Voiceover ...")
-    vo = make_voiceovers(cfg, package["sections"], os.path.join(workdir, "audio"))
-    log_resources("pre-sections")
-    print("[3/5] Section videos (stock clips + overlays) ...")
-    segs = build_section_videos(package["sections"], vo, workdir, api_key,
-                                topic=topic_data)
+    vo = _load_vo(workdir, package)
+    if vo is not None:
+        print("[phase:voice] already done, skipping")
+    else:
+        print("[1/5] Script ready:", package["title"])
+        log_resources("pre-voiceover")
+        print("[2/5] Voiceover ...")
+        audio_dir = os.path.join(workdir, "audio")
+        vo = make_voiceovers(cfg, package["sections"], audio_dir)
+        with open(os.path.join(audio_dir, "durations.json"), "w") as f:
+            json.dump({"durations": [d for _, d in vo]}, f)
+    save_checkpoint(workdir, voice=True)
+    return topic_data, package, vo
+
+
+def _seg_paths(workdir, n):
+    seg_dir = os.path.join(workdir, "_segments")
+    return [os.path.join(seg_dir, f"seg_{i:02d}.mp4") for i in range(n)]
+
+
+def phase_sections(workdir, cfg, topic_arg=None, prepicked=None):
+    """Phase 2: build the 10 section mp4s. Idempotent."""
+    from visuals import build_section_videos
+    os.makedirs(workdir, exist_ok=True)
+    topic_data, package = pin_package(workdir, topic_arg, prepicked)
+    vo = _load_vo(workdir, package)
+    if vo is None:
+        raise SystemExit(
+            "[phase:sections] voice outputs missing in workdir "
+            "(audio/section_*.mp3 + durations.json); "
+            "run '--phase voice' first.")
+
+    n = len(package["sections"])
+    segs = _seg_paths(workdir, n)
+    if all(os.path.isfile(p) for p in segs):
+        print("[phase:sections] already done, skipping")
+    else:
+        api_key = (cfg.get("pexels_api_key") or "").strip()
+        log_resources("pre-sections")
+        print("[3/5] Section videos (stock clips + overlays) ...")
+        segs = build_section_videos(package["sections"], vo, workdir,
+                                    api_key, topic=topic_data)
+    save_checkpoint(workdir, sections=True)
+    return topic_data, package, vo, segs
+
+
+def _uploaded_state(workdir):
+    try:
+        with open(os.path.join(workdir, "uploaded.json")) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_uploaded_state(workdir, **kw):
+    st = _uploaded_state(workdir)
+    st.update(kw)
+    try:
+        with open(os.path.join(workdir, "uploaded.json"), "w") as f:
+            json.dump(st, f)
+    except Exception as e:
+        print(f"[upload-state] save failed (non-fatal): {e}")
+
+
+def phase_finish(workdir, cfg, args, resume=True):
+    """Phase 3: assemble -> ticker+subscribe -> audio -> thumbnail ->
+    TikTok copies -> (optional) upload. Rebuilds the final video from the
+    pinned phases; never redoes voice/sections work."""
+    from visuals import (make_subscribe_overlay, build_disclaimer_segment,
+                          add_ticker_subscribe,
+                          DISCLAIMER_PRE_S, DISCLAIMER_POST_S)
+    from assemble import assemble_video
+    from thumbnail import make_thumbnail
+    from stock import query_from_heading
+    from seo import DISCLAIMER_EXACT
+
+    os.makedirs(workdir, exist_ok=True)
+    topic_data, package = pin_package(workdir, args.topic)
+    vo = _load_vo(workdir, package)
+    if vo is None:
+        raise SystemExit(
+            "[phase:finish] voice outputs missing in workdir; "
+            "run '--phase voice' first.")
+    n = len(package["sections"])
+    segs = _seg_paths(workdir, n)
+    if not all(os.path.isfile(p) for p in segs):
+        raise SystemExit(
+            "[phase:finish] section videos missing in workdir; "
+            "run '--phase sections' first.")
+
     # --- v16 final timeline -------------------------------------------
     # 2s disclaimer card + 10 content sections + 3s disclaimer card.
     # starts[i] = absolute start of vo[i] inside the FINAL video.
@@ -220,30 +387,11 @@ def build_video(topic_data, cfg):
     log_resources("pre-thumbnail")
     print("[5/5] Thumbnail ...")
     thumb_path = os.path.join(workdir, "thumbnail.png")
+    api_key = (cfg.get("pexels_api_key") or "").strip()
     make_thumbnail(package["title"], thumb_path, api_key,
                    query_from_heading(package["title"]),
                    thumb_q=topic_data.get("thumb_q"), workdir=workdir)
-    return package, video_path, thumb_path
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--topic", default="",
-                    help="keyword to pick a topic (default: rotate by date)")
-    ap.add_argument("--auto", action="store_true")
-    ap.add_argument("--upload", action="store_true")
-    ap.add_argument("--privacy", default="public",
-                    choices=["public", "unlisted", "private"])
-    args = ap.parse_args()
-
-    from config import load_config
-    from script_builder import pick_topic, find_topic
-
-    cfg = load_config()
-    topic_data = find_topic(args.topic) if args.topic else pick_topic()
-    print("Topic:", topic_data["topic"])
-
-    package, video_path, thumb_path = build_video(topic_data, cfg)
+    save_checkpoint(workdir, finish=True)
     print("\nDone! Files:", video_path, thumb_path)
 
     # TikTok/WhatsApp delivery copies: compressed long video + vertical
@@ -262,40 +410,102 @@ def main():
     log_resources("post-tiktok")
 
     if args.upload:
-        # Random 0-8h delay before upload so publish times vary daily.
-        import random as _random
-        import time as _time
-        _delay = _random.uniform(0, 8 * 3600)
-        print(f"[schedule] random upload delay: {_delay / 3600:.2f}h "
-              f"({_delay:.0f}s) ...")
-        _time.sleep(_delay)
+        # v16.3 resume guard: on a re-run after a crash, never upload the
+        # same video twice. uploaded.json is per-run (fresh workdir each
+        # daily run), so this only triggers on "Re-run failed jobs".
+        state = _uploaded_state(workdir) if resume else {}
+        if not state.get("video_url"):
+            # Random 0-8h delay before upload so publish times vary daily.
+            import random as _random
+            import time as _time
+            _delay = _random.uniform(0, 8 * 3600)
+            print(f"[schedule] random upload delay: {_delay / 3600:.2f}h "
+                  f"({_delay:.0f}s) ...")
+            _time.sleep(_delay)
 
-        from upload import upload_video
-        url = upload_video(
-            video_path, package["title"], package["description"],
-            package["tags"], privacy=args.privacy, thumbnail_path=thumb_path,
-        )
-        print("\nUploaded:", url)
+            from upload import upload_video
+            url = upload_video(
+                video_path, package["title"], package["description"],
+                package["tags"], privacy=args.privacy,
+                thumbnail_path=thumb_path,
+            )
+            print("\nUploaded:", url)
+            _save_uploaded_state(workdir, video_url=url)
+        else:
+            print(f"[phase:finish] already uploaded, skipping: "
+                  f"{state['video_url']}")
 
         # Daily Short: build + upload a 30-45s vertical short (non-fatal)
-        try:
-            from shorts import build_short, make_tiktok_copy
-            short_video, short_title, short_desc, short_tags = build_short(
-                topic_data, cfg)
-            # TikTok/WhatsApp-friendly small vertical copy (non-fatal)
+        state = _uploaded_state(workdir) if resume else {}
+        if state.get("short_url"):
+            print(f"[phase:finish] short already uploaded, skipping: "
+                  f"{state['short_url']}")
+        else:
             try:
-                tiktok_path = make_tiktok_copy(short_video)
-                print("tiktok copy:", tiktok_path)
+                from shorts import build_short, make_tiktok_copy
+                short_video, short_title, short_desc, short_tags = \
+                    build_short(topic_data, cfg)
+                # TikTok/WhatsApp-friendly small vertical copy (non-fatal)
+                try:
+                    tiktok_path = make_tiktok_copy(short_video)
+                    print("tiktok copy:", tiktok_path)
+                except Exception as e:
+                    print(f"[tiktok] copy skipped (non-fatal): {e}")
+                from upload import upload_video as _uv
+                short_url = _uv(
+                    short_video, short_title, short_desc, short_tags,
+                    privacy=args.privacy,
+                )
+                print("short uploaded:", short_url)
+                _save_uploaded_state(workdir, short_url=short_url)
             except Exception as e:
-                print(f"[tiktok] copy skipped (non-fatal): {e}")
-            short_url = upload_video(
-                short_video, short_title, short_desc, short_tags,
-                privacy=args.privacy,
-            )
-            print("short uploaded:", short_url)
-        except Exception as e:
-            print(f"[short] skipped (non-fatal): {e}")
+                print(f"[short] skipped (non-fatal): {e}")
     return 0
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--topic", default="",
+                    help="keyword to pick a topic (default: rotate by date)")
+    ap.add_argument("--auto", action="store_true")
+    ap.add_argument("--upload", action="store_true")
+    ap.add_argument("--privacy", default="public",
+                    choices=["public", "unlisted", "private"])
+    ap.add_argument("--phase", default="", choices=[""] + list(PHASES),
+                    help="v16.3: run a single resumable phase "
+                         "(default: run all phases in order)")
+    ap.add_argument("--workdir", default="",
+                    help="v16.3: working directory for phased runs "
+                         "(default: work)")
+    args = ap.parse_args()
+
+    from config import load_config
+
+    cfg = load_config()
+
+    if args.phase:
+        # --- v16.3 phased (resumable) mode ---
+        workdir = args.workdir or "work"
+        os.makedirs(workdir, exist_ok=True)
+        if args.phase == "voice":
+            phase_voice(workdir, cfg, args.topic or None)
+        elif args.phase == "sections":
+            phase_sections(workdir, cfg, args.topic or None)
+        elif args.phase == "finish":
+            phase_finish(workdir, cfg, args, resume=True)
+        return 0
+
+    # --- legacy single-run mode: pick topic -> all phases in order ---
+    from script_builder import pick_topic, find_topic
+    topic_data = find_topic(args.topic) if args.topic else pick_topic()
+    slug = re.sub(r"[^a-z0-9]+", "-", topic_data["topic"].lower()
+                  ).strip("-")[:40]
+    workdir = os.path.join(cfg["out_dir"], slug)
+    os.makedirs(workdir, exist_ok=True)
+
+    _t, package, vo = phase_voice(workdir, cfg, prepicked=topic_data)
+    _t, package, vo, segs = phase_sections(workdir, cfg, prepicked=topic_data)
+    return phase_finish(workdir, cfg, args, resume=False)
 
 
 if __name__ == "__main__":
