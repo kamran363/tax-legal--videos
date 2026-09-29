@@ -1,0 +1,56 @@
+name: FB Video Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-video-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download test video
+        run: |
+          curl -sL "https://muse.ai/files/1330173426844892/1400183301720980/ri5aq6su2z5z5r3orw6khzva/frog-crab-1.mp4" -o test-video.mp4
+          ls -lh test-video.mp4
+
+      - name: Upload to Facebook
+        run: |
+          PAGE_ID="1266057776592265"
+          # Step 1: Start the upload session
+          echo "Starting upload session..."
+          SESSION=$(curl -s -X POST "https://graph.facebook.com/v21.0/${PAGE_ID}/video_starts" \
+            -d "access_token=${{ secrets.FB_PAGE_TOKEN }}" \
+            -d "file_length=$(stat -c%s test-video.mp4)" \
+            -d "file_type=video/mp4")
+          echo "Session: $SESSION"
+          
+          UPLOAD_SESSION_ID=$(echo $SESSION | python3 -c "import json,sys; print(json.load(sys.stdin).get('upload_session_id', ''))")
+          VIDEO_ID=$(echo $SESSION | python3 -c "import json,sys; print(json.load(sys.stdin).get('video_id', ''))")
+          
+          if [ -z "$UPLOAD_SESSION_ID" ]; then
+            echo "Failed to start upload session!"
+            echo "$SESSION"
+            exit 1
+          fi
+          
+          echo "Upload Session ID: $UPLOAD_SESSION_ID"
+          echo "Video ID: $VIDEO_ID"
+          
+          # Step 2: Upload the video file
+          echo "Uploading video..."
+          curl -s -X POST "https://graph.facebook.com/v21.0/${UPLOAD_SESSION_ID}" \
+            -H "Authorization: OAuth ${{ secrets.FB_PAGE_TOKEN }}" \
+            -F "video_file=@test-video.mp4" \
+            -o upload_result.json
+          cat upload_result.json
+          
+          # Step 3: Finish the upload
+          echo "Finishing upload..."
+          curl -s -X POST "https://graph.facebook.com/v21.0/${UPLOAD_SESSION_ID}" \
+            -d "access_token=${{ secrets.FB_PAGE_TOKEN }}" \
+            -d "upload_phase=finish" \
+            -d "video_id=${VIDEO_ID}" \
+            -d "title=Funny Frog vs Crab! 🐸🦀" \
+            -d "description=The frog tried to catch the crab... but the crab had other plans! 😂 #funny #frog #crab #comedy"
+          
+          echo ""
+          echo "✅ Video upload test complete! Check the Facebook page."
