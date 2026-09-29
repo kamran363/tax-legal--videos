@@ -2,14 +2,17 @@ name: Daily YouTube Upload
 
 on:
   schedule:
-    # Every day at 12:00 UTC (5pm PKT). The script then waits a random
-    # 0-8 hours before uploading so publish times vary naturally.
+    # Every day at 12:00 UTC (5pm PKT).
+    # v16.4: No more 0-8h sleep in the runner! Video uploads immediately
+    # with YouTube's scheduled publishing (publishAt) for natural timing.
     - cron: "0 12 * * *"
   workflow_dispatch:  # lets you run it manually from the Actions tab
 
 jobs:
   build-and-upload:
     runs-on: ubuntu-latest
+    # v16.4: Fail fast if something hangs (prevents 6h timeout kills)
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -22,16 +25,21 @@ jobs:
 
       - name: Install Python deps
         # numpy is needed for SFX/BGM generation (sfx module)
-        run: pip install -q -r requirements.txt numpy
+        # google-api-python-client is needed for the v16.4 simple uploader
+        run: pip install -q -r requirements.txt numpy google-api-python-client google-auth
 
       # ---------------------------------------------------------------
-      # v16.3 resumable phases: each phase skips work already present in
+      # v16.4 resumable phases: each phase skips work already present in
       # work/. After every phase the workdir is saved as an artifact; on
       # "Re-run failed jobs" GitHub reuses the run, so the artifacts from
       # the previous attempt are restored and the run continues from the
       # last finished phase instead of starting over. Restore/save steps
       # are best-effort (continue-on-error): the phase steps themselves
       # decide success/failure.
+      #
+      # v16.4 CHANGE: Phase 3 no longer does --upload (which had a 0-8h
+      # sleep that got runners killed). Upload is a separate step using
+      # YouTube's scheduled publishing API (no sleep needed).
       # ---------------------------------------------------------------
 
       - name: Restore voice checkpoint
@@ -99,14 +107,25 @@ jobs:
           path: work/
         continue-on-error: true
 
-      - name: Phase 3 - Finish and upload
-        run: python daily.py --phase finish --workdir work --upload --privacy public
+      - name: Phase 3 - Finish (build only)
+        # v16.4: NO --upload flag! This builds the video but does NOT sleep
+        # or upload. Upload happens in the next step via simple_upload.py.
+        run: python daily.py --phase finish --workdir work
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           TTS_ENGINE: edge
+
+      - name: Phase 4 - Upload (v16.4 simple uploader)
+        # v16.4: Uploads immediately with YouTube scheduled publishing.
+        # NO 0-8h sleep! The video goes live 0-8h later automatically.
+        run: python simple_upload.py
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
 
       - name: Upload TikTok short copy
         # Small WhatsApp-friendly vertical copy of the day's Short, kept
@@ -134,4 +153,4 @@ jobs:
         with:
           name: tiktok-cover
           path: work/tiktok-cover.jpg
-          retention-days: 7 
+          retention-days: 7
