@@ -7,20 +7,10 @@ jobs:
   test-video-upload:
     runs-on: ubuntu-latest
     steps:
-      - name: Upload to Facebook (via URL)
+      - name: Upload to Facebook
         run: |
-          PAGE_ID="1266057776592265"
-          VIDEO_URL="https://muse.ai/files/1330173426844892/951203438032354/y4feafhdk4nqrj4x7w8a5lo4/toddler-test.mp4"
-          
-          echo "Uploading video to Facebook page..."
-          RESULT=$(curl -s -X POST "https://graph.facebook.com/v21.0/${PAGE_ID}/videos" \
+          curl -s -X POST "https://graph.facebook.com/v21.0/1266057776592265/videos" \
             -d "access_token=${{ secrets.FB_PAGE_TOKEN }}" \
-            -d "file_url=${VIDEO_URL}" \
-            -d "title=Cute Toddler Moment! 👶💕" \
-            -d "description=Look at this adorable little one! 😍 #toddler #cute #baby #funny")
-          
-          echo "Result: $RESULT"
-          
-          # Check if it succeeded
-          echo "$RESULT" | python3 -c " import json,sys try: d = json.load(sys.stdin) if 'id' in d: print(f\"✅ SUCCESS! Video ID: {d['id']}\") elif 'error' in d: e = d['error'] print(f\"❌ ERROR {e.get('code')}: {e.get('message')}\") sys.exit(1) else: print(f\"Unknown response: {d}\") sys.exit(1) except Exception as ex: print(f\"Parse error: {ex}\") sys.exit(1) "name: FB Video Test
- try: d = json.load(sys.stdin) if 'id' in d: print(f\"✅ SUCCESS! Video ID: {d['id']}\") elif 'error' in d: e = d['error'] print(f\"❌ ERROR {e.get('code')}: {e.get('message')}\") sys.exit(1) else: print(f\"Unknown response: {d}\") sys.exit(1) except Exception as ex: print(f\"Parse error: {ex}\") sys.exit(1) "
+            -d "file_url=https://muse.ai/files/1330173426844892/951203438032354/y4feafhdk4nqrj4x7w8a5lo4/toddler-test.mp4" \
+            -d "title=Cute Toddler Moment!" \
+            -d "description=Adorable toddler video test"
