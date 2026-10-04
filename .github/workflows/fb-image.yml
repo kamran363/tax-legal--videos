@@ -1,0 +1,48 @@
+name: FB Image Post (2x daily)
+
+on:
+  schedule:
+    # 2x daily at :20: 08:20 and 20:20 UTC (= 13:20 and 01:20 PKT)
+    - cron: "20 8,20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  post-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download content zip from Google Drive
+        run: |
+          mkdir -p zips
+          curl -sSL -o "zips/cbc-life-4.zip" \
+            "https://drive.usercontent.google.com/download?id=1IFZNOxoc9yQfvBPWcbl-tsn1u4Y0kicg&export=download&confirm=t"
+          ls -la zips/
+          unzip -o -q zips/cbc-life-4.zip
+          echo "images: $(ls fb-auto2/images/*.jpg | wc -l)"
+          echo "script ok: $(ls fb-auto2/fb_image_poster.py)"
+
+      - name: Install deps
+        run: pip install -q requests
+
+      - name: Post next cute image
+        env:
+          PAGE_ID: "1266057776592265"
+          FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
+        run: python fb-auto2/fb_image_poster.py
+
+      - name: Save posted list back to repo
+        if: always()
+        run: |
+          git config user.name "fb-bot"
+          git config user.email "fb-bot@local"
+          git add fb-auto2/posted_images.json
+          git diff --cached --quiet || git commit -m "mark posted image"
+          git push
