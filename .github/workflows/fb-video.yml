@@ -3,7 +3,7 @@ name: FB Video Post (2x daily)
 on:
   schedule:
     # 2x daily: 05:00 and 17:00 UTC (= 10:00 and 22:00 PKT)
-    - cron: "0 5,17 * * *"
+    - cron: "0 3,5,9,15,17 * * *"
   workflow_dispatch:
 
 permissions:
