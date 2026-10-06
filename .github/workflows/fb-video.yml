@@ -1,13 +1,17 @@
 name: FB Video Post (2x daily)
 
+
 on:
   schedule:
     # 2x daily: 05:00 and 17:00 UTC (= 10:00 and 22:00 PKT)
     - cron: "0 3,5,9,15,17 * * *"
+
   workflow_dispatch:
+
 
 permissions:
   contents: write
+
 
 jobs:
   post-video:
@@ -15,37 +19,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Download content zips from Google Drive
+
+      - name: Download content zips from GitHub release
         run: |
           mkdir -p zips
-          dl() { curl -sSL -o "zips/$1" "https://drive.usercontent.google.com/download?id=$2&export=download&confirm=t"; }
-          dl cbc-life-1.zip 1McTCHzsVTXuRtKupP9XRQEM3tMH8gRG7
-          dl cbc-life-2.zip 1h4oTHeg1u0A-lv_eNHrElVRU0uIogMxE
-          dl cbc-life-3.zip 1igRi50ZuhM2kTy7B3-3Cl6a4eRDRAkBI
-          dl cbc-life-4.zip 1IFZNOxoc9yQfvBPWcbl-tsn1u4Y0kicg
+          base="https://github.com/kamran363/tax-legal--videos/releases/download/v2.0"
+          for i in 1 2 3 4; do curl -sSL -o "zips/cbc-real-$i.zip" "$base/cbc-real-$i.zip"; done
           ls -la zips/
-          for z in zips/cbc-life-*.zip; do unzip -o -q "$z"; done
+          for z in zips/cbc-real-*.zip; do unzip -o -q "$z"; done
           echo "videos: $(ls fb-auto2/videos/*.mp4 | wc -l)"
           echo "script ok: $(ls fb-auto2/fb_video_poster.py)"
 
+
       - name: Install deps
         run: pip install -q requests
-
-      - name: Post next toddler clip
-        env:
-          PAGE_ID: "1266057776592265"
-          FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
-        run: python fb-auto2/fb_video_poster.py
-
-      - name: Save posted list back to repo
-        if: always()
-        run: |
-          git config user.name "fb-bot"
-          git config user.email "fb-bot@local"
-          git add fb-auto2/posted_videos.json
-          git diff --cached --quiet || git commit -m "mark posted video"
-          git push
