@@ -38,3 +38,20 @@ jobs:
 
       - name: Install deps
         run: pip install -q requests
+
+
+      - name: Post next baby clip
+        env:
+          PAGE_ID: "1266057776592265"
+          FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
+        run: python fb-auto2/fb_video_poster.py
+
+
+      - name: Save posted list back to repo
+        if: always()
+        run: |
+          git config user.name "fb-bot"
+          git config user.email "fb-bot@local"
+          git add fb-auto2/posted_videos.json
+          git diff --cached --quiet || git commit -m "mark posted video"
+          git push
