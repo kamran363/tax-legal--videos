@@ -29,7 +29,7 @@ jobs:
         run: |
           mkdir -p zips
           base="https://github.com/kamran363/tax-legal--videos/releases/download/v2.0"
-          for i in 1 2 3 4; do curl -sSL -o "zips/cbc-real-$i.zip" "$base/cbc-real-$i.zip"; done
+          for i in 1 2 3 4 5; do curl -sSL -o "zips/cbc-real-$i.zip" "$base/cbc-real-$i.zip"; done
           ls -la zips/
           for z in zips/cbc-real-*.zip; do unzip -o -q "$z"; done
           echo "videos: $(ls fb-auto2/videos/*.mp4 | wc -l)"
